@@ -1,12 +1,17 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import UserMenu from '@/components/UserMenu';
+import { UserOut } from '@/lib/api';
 
 interface Props {
   backendAlive: boolean | null;
+  user        : UserOut | null;
+  authLoading : boolean;
+  onLogout    : () => void;
 }
 
-export default function TopStatusBar({ backendAlive }: Props) {
+export default function TopStatusBar({ backendAlive, user, authLoading, onLogout }: Props) {
   const [clock, setClock] = useState('');
 
   useEffect(() => {
@@ -149,6 +154,9 @@ export default function TopStatusBar({ backendAlive }: Props) {
         >
           LOCAL
         </div>
+
+        {/* User menu with logout */}
+        <UserMenu user={user} loading={authLoading} onLogout={onLogout} />
       </div>
     </header>
   );

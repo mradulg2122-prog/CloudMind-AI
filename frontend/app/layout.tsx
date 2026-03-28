@@ -1,20 +1,23 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import { ToastProvider } from "@/lib/toast";
 
 export const metadata: Metadata = {
-  title: "CloudMind AI – Autonomous Cloud Cost Intelligence Platform",
-  description: "Real-time workload forecasting and autonomous cloud cost intelligence powered by ML.",
+  title: "CloudMind AI – Enterprise Cloud Intelligence",
+  description: "Autonomous cloud cost optimization powered by ML — real-time workload prediction and intelligent scaling.",
 };
 
-export default function RootLayout({
-  children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
     <html lang="en">
-      <body className="antialiased">
-        {children}
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+      </head>
+      <body className="antialiased" suppressHydrationWarning>
+        <ToastProvider>
+          {children}
+        </ToastProvider>
       </body>
     </html>
   );
