@@ -1,0 +1,8 @@
+2026-03-21 21:44:49 | INFO     | ============================================================
+2026-03-21 21:44:49 | INFO     | CloudMind AI — Model Retraining Pipeline STARTED
+2026-03-21 21:44:49 | INFO     | ============================================================
+2026-03-21 21:44:49 | INFO     | Fetched 13 training samples from database.
+2026-03-21 21:44:49 | INFO     | Training RandomForestRegressor on 13 samples …
+2026-03-21 21:44:49 | INFO     | New model MAE on test set: 37.17 req/min
+2026-03-21 21:44:49 | INFO     | Old model backed up to: C:\Users\dell\Desktop\CloudMInd1\CloudMind_AI\backend\model_backups\cloudmind_model_20260321_161449.joblib
+2026-03-21 21:44:49 | INFO     | Retraining COMPLETE: {'status': 'success', 'started': '2026-03-21T16:14:49.132922Z', 'error': None, 'samples_used': 13, 'new_model_mae': 37.1677, 'model_replaced': True, 'backup_path': 'C:\\Users\\dell\\Desktop\\CloudMInd1\\CloudMind_AI\\backend\\model_backups\\cloudmind_model_20260321_161449.joblib', 'completed': '2026-03-21T16:14:49.737549Z'}
