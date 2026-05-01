@@ -55,7 +55,7 @@ const COLORS = {
 };
 
 // ── API helper ─────────────────────────────────────────────────────────────────
-const API = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
+const API = process.env.NEXT_PUBLIC_API_URL ?? "https://cloudmind-ai.onrender.com";
 
 async function fetchAnalytics(): Promise<AnalyticsData> {
   const token = getToken();

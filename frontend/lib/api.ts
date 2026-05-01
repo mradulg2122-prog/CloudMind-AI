@@ -100,7 +100,7 @@ export const getToken = loadToken;
 // ─── Axios client (auto-attaches token on every request) ─────────────────────
 
 const apiClient = axios.create({
-  baseURL : 'http://localhost:8000',
+  baseURL : process.env.NEXT_PUBLIC_API_URL || 'https://cloudmind-ai.onrender.com',
   timeout : 10000,
   headers : { 'Content-Type': 'application/json' },
 });

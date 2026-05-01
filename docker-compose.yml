@@ -57,7 +57,7 @@ services:
   # ── Next.js Frontend ─────────────────────────────────────────────────────────
   frontend:
     build:
-      context    : ./frontend-next
+      context    : ./frontend
       dockerfile : Dockerfile.frontend
     image          : cloudmind-frontend:latest
     container_name : cloudmind_frontend
@@ -65,7 +65,7 @@ services:
     ports:
       - "3000:3000"
     environment:
-      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      - NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL:-https://cloudmind-ai.onrender.com}
       - NODE_ENV=production
     depends_on:
       backend:

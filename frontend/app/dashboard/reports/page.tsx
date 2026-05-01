@@ -9,7 +9,7 @@ import { AreaChart, Area, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, R
 import { fetchPredictionHistory, getToken } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 
-const API = 'http://localhost:8000';
+const API = process.env.NEXT_PUBLIC_API_URL ?? 'https://cloudmind-ai.onrender.com';
 
 function ExportCard({ icon, title, desc, color, format, onExport, loading }: {
   icon: string; title: string; desc: string; color: string; format: string;

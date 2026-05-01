@@ -14,7 +14,7 @@ import {
 import { fetchPredictionHistory, getToken } from '@/lib/api';
 import { useToast } from '@/lib/toast';
 
-const API    = 'http://localhost:8000';
+const API    = process.env.NEXT_PUBLIC_API_URL ?? 'https://cloudmind-ai.onrender.com';
 const COLORS = ['#0078D4', '#00B050', '#F7B731', '#FF4D4F', '#818CF8', '#00BCF2'];
 
 // ── Dark Tooltip ──────────────────────────────────────────────────────────────
