@@ -245,8 +245,10 @@ export default function ExplanationPanel({ explanation, isLoading }: Props) {
                 <Tooltip
                 contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8 }}
                 labelStyle={{ color: "#f1f5f9" }}
-                formatter={(value: any) => {
-                  return value ? value.toString() : "0";
+                formatter={(value: any, _name: any, props: any) => {
+                  const val = value ?? 0;
+                  const desc = props?.payload?.description ?? "";
+                  return [`${val}%`, desc];
                 }
               }
                 />
