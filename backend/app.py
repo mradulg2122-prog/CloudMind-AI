@@ -1,83 +1,100 @@
 # =============================================================================
-# CloudMind AI – app.py  (v3 — Enterprise Grade)
-# FastAPI backend server
+# CloudMind AI – app.py  (v5 — Production Grade)
 #
-# v2 features (preserved):
-#   ✅ SQLite database integration (via database.py / SQLAlchemy)
-#   ✅ JWT authentication (via auth.py / python-jose + passlib)
-#   ✅ Centralized structured logging (via logger_config.py)
-#   ✅ Rate limiting — 100 requests/minute per IP (via slowapi)
-#   ✅ Input validation with descriptive error messages
-#   ✅ Enhanced decision engine with history-aware scaling
-#   ✅ Request timing middleware
+# Architecture: API Layer → Service Layer → ML Layer → Data Layer
 #
-# v3 NEW features:
-#   ✅ Strict CORS with allowed-origins env-var config
-#   ✅ Security headers middleware (XSS, CSP, HSTS, X-Frame-Options)
-#   ✅ Enhanced /health endpoint (DB + model status)
-#   ✅ /analytics endpoint — advanced metrics from DB
-#   ✅ /export/csv and /export/pdf — download predictions as reports
-#   ✅ /retrain/trigger — manually kick off model retraining
-#
-# Run with:
-#   uvicorn app:app --reload --host 0.0.0.0 --port 8000
+# v5 additions:
+#   ✅ /status         — detailed component health (DB, model, disk)
+#   ✅ /metrics        — operational metrics dashboard
+#   ✅ /admin/model/versions — model version list
+#   ✅ /admin/model/register — register new model version
+#   ✅ /admin/model/rollback — rollback to previous model version
+#   ✅ /admin/cleanup  — background cleanup of old request logs
+#   ✅ TaskQueue integration — non-blocking background logging
+#   ✅ Model warmup on startup via task_queue
+#   ✅ Input sanitization via sanitization_service
+#   ✅ Complete RBAC, XAI, Reporting, Rate Limiting, Structured Logging
 # =============================================================================
 
 import os
 import io
 import csv
+import json
 import time
-import subprocess
+from contextlib import asynccontextmanager
 from datetime import datetime
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Request, status
+from fastapi import FastAPI, HTTPException, Depends, Request, status, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session
-from sqlalchemy import func, text
+from sqlalchemy import func
 
 # ── Internal modules ──────────────────────────────────────────────────────────
 from predict import run_prediction, MODEL_PATH
 from database import (
     get_db, init_db, engine,
     TelemetryRecord, PredictionRecord, ScalingDecision,
-    AlertRecord, RequestLog, User
+    AlertRecord, RequestLog, User,
+    PredictionExplanation, Report,
 )
 from auth import (
     get_current_user, authenticate_user, create_user,
-    create_access_token, RegisterRequest, LoginRequest,
-    TokenResponse, UserOut
+    create_access_token, set_user_role,
+    RegisterRequest, LoginRequest, TokenResponse, UserOut,
 )
 from logger_config import get_logger
+from services.rbac import require_role, Role
+from services.explain_service import explain_prediction
+from services.report_service import ReportService
+from services.logging_service import StructuredLogger
+from services.health_service import HealthService
+from services.task_queue import task_queue
+from services.model_registry import model_registry
+from services.sanitization_service import sanitize_string, sanitize_dict
 
-# ── Logger for this module ────────────────────────────────────────────────────
-logger = get_logger(__name__)
+# ── Loggers ───────────────────────────────────────────────────────────────────
+logger      = get_logger(__name__)
+slog        = StructuredLogger("app")
 
-# ── Rate limiter — 100 requests per minute per client IP ─────────────────────
+# ── Rate limiter ──────────────────────────────────────────────────────────────
 limiter = Limiter(key_func=get_remote_address)
 
-# ── Create FastAPI app ────────────────────────────────────────────────────────
+# ── Lifespan handler (replaces deprecated on_event) ──────────────────────────
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    init_db()
+    logger.info("CloudMind AI v5 started — database initialised.")
+    # Warm up the ML model in background to reduce first-request latency
+    import asyncio
+    loop = asyncio.get_event_loop()
+    loop.run_in_executor(None, task_queue.warmup_model)
+    yield
+    logger.info("CloudMind AI v5 shutting down gracefully.")
+
+# ── FastAPI app ───────────────────────────────────────────────────────────────
 app = FastAPI(
-    title       = "CloudMind AI – Workload Prediction API",
+    title       = "CloudMind AI — Cloud Cost Intelligence API",
     description = (
-        "Predicts future cloud workload and recommends server scaling actions. "
-        "v2 adds JWT auth, SQLite storage, structured logging, and rate limiting."
+        "Autonomous cloud cost intelligence and self-optimizing infrastructure platform. "
+        "Provides ML-powered workload prediction, XAI explanations, RBAC, optimization reports, "
+        "model versioning, health monitoring, and structured logging."
     ),
-    version     = "2.0.0",
+    version     = "5.0.0",
+    docs_url    = "/docs",
+    redoc_url   = "/redoc",
+    lifespan    = lifespan,
 )
 
-# Attach rate limiter state and exception handler
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── CORS — strict origin control ─────────────────────────────────────────────
-# Reads allowed origins from ALLOWED_ORIGINS env var (comma-separated).
-# Falls back to localhost:3000 and localhost:3001 for local development.
+# ── CORS ──────────────────────────────────────────────────────────────────────
 _ALLOWED_ORIGINS_ENV = os.getenv("ALLOWED_ORIGINS", "")
 ALLOWED_ORIGINS: List[str] = (
     [o.strip() for o in _ALLOWED_ORIGINS_ENV.split(",") if o.strip()]
@@ -91,350 +108,289 @@ ALLOWED_ORIGINS: List[str] = (
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins      = ALLOWED_ORIGINS,
-    allow_credentials  = True,               # needed for cookie-based auth
-    allow_methods      = ["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers      = ["Authorization", "Content-Type", "Accept", "X-Request-ID"],
-    expose_headers     = ["X-Request-ID", "X-RateLimit-Remaining"],
-    max_age            = 600,                # pre-flight cache 10 min
+    allow_origins     = ALLOWED_ORIGINS,
+    allow_credentials = True,
+    allow_methods     = ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
+    allow_headers     = ["Authorization", "Content-Type", "Accept", "X-Request-ID", "X-API-Version"],
+    expose_headers    = ["X-Request-ID", "X-RateLimit-Remaining", "X-Process-Time"],
+    max_age           = 600,
 )
 
 
 # ── Security Headers Middleware ───────────────────────────────────────────────
-# Adds HTTP security headers to EVERY response to protect against:
-#   - XSS (Cross-Site Scripting)
-#   - Clickjacking (X-Frame-Options)
-#   - MIME sniffing (X-Content-Type-Options)
-#   - Protocol downgrade (HSTS)
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     response = await call_next(request)
-    # Prevent MIME-type sniffing
-    response.headers["X-Content-Type-Options"] = "nosniff"
-    # Block iframe embedding (clickjacking protection)
-    response.headers["X-Frame-Options"] = "DENY"
-    # Legacy XSS filter for older browsers
-    response.headers["X-XSS-Protection"] = "1; mode=block"
-    # Content Security Policy — restricts what resources can load
-    response.headers["Content-Security-Policy"] = (
-        "default-src 'self'; "
-        "script-src 'self' 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; "
-        "img-src 'self' data:;"
+    response.headers["X-Content-Type-Options"]  = "nosniff"
+    response.headers["X-Frame-Options"]          = "DENY"
+    response.headers["X-XSS-Protection"]         = "1; mode=block"
+    response.headers["Content-Security-Policy"]  = (
+        "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
     )
-    # Referrer policy — don't leak URL in Referer header
-    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    # Permissions policy — disable unnecessary browser features
-    response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
-    # HSTS — force HTTPS (uncomment in production with real TLS)
-    # response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    response.headers["Referrer-Policy"]          = "strict-origin-when-cross-origin"
+    response.headers["Permissions-Policy"]       = "camera=(), microphone=(), geolocation=()"
+    # Uncomment in production with valid TLS:
+    # response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains; preload"
     return response
 
 
-# =============================================================================
-# STARTUP — create DB tables once
-# =============================================================================
-
-@app.on_event("startup")
-def on_startup():
-    """Initialise SQLite tables when the server starts."""
-    init_db()
-    logger.info("Database initialised — all tables ready.")
-
-
-# =============================================================================
-# REQUEST TIMING MIDDLEWARE — logs method, path, status, and duration
-# =============================================================================
-
+# ── Request Timing + Structured Logging Middleware ────────────────────────────
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    """
-    Middleware that:
-    1. Records the start time
-    2. Calls the route handler
-    3. Logs the request details (method, path, status, duration)
-    4. Stores the log row in the database asynchronously
-    """
-    start = time.perf_counter()
-    response = await call_next(request)
-    duration_ms = round((time.perf_counter() - start) * 1000, 2)
+    start      = time.perf_counter()
+    response   = await call_next(request)
+    elapsed_ms = round((time.perf_counter() - start) * 1000, 2)
 
-    logger.info(
-        f"[Request] {request.method} {request.url.path} "
-        f"→ {response.status_code} ({duration_ms} ms)"
+    slog.performance(
+        endpoint    = str(request.url.path),
+        method      = request.method,
+        duration_ms = elapsed_ms,
+        status      = response.status_code,
     )
 
-    # Persist to DB in a fire-and-forget fashion (non-blocking)
+    # Non-blocking DB write for request log
     try:
         db = next(get_db())
-        log_entry = RequestLog(
+        db.add(RequestLog(
             method      = request.method,
             path        = str(request.url.path),
             status_code = response.status_code,
-            duration_ms = duration_ms,
-        )
-        db.add(log_entry)
+            duration_ms = elapsed_ms,
+            ip_address  = request.client.host if request.client else None,
+        ))
         db.commit()
         db.close()
     except Exception as exc:
-        logger.warning(f"[Middleware] Could not save request log: {exc}")
+        logger.warning(f"[Middleware] Request log write failed: {exc}")
 
+    response.headers["X-Process-Time"] = f"{elapsed_ms}ms"
     return response
 
 
+# (Startup handled by lifespan context manager above)
+
+
 # =============================================================================
-# REQUEST & RESPONSE MODELS
+# PYDANTIC SCHEMAS
 # =============================================================================
 
 class TelemetryInput(BaseModel):
-    """
-    Input schema — telemetry values sent by the user or monitoring system.
-    All fields include validation constraints with descriptive error messages.
-    """
+    """Input telemetry payload with field-level validation."""
+    model_config = ConfigDict(json_schema_extra={"example": {
+        "requests_per_minute": 850, "cpu_usage_percent": 70,
+        "memory_usage_percent": 65, "active_servers": 4,
+        "hour": 14, "minute": 30, "response_time_ms": 120, "cost_per_server": 50,
+    }})
+
     requests_per_minute  : float = Field(..., description="Current requests per minute")
-    cpu_usage_percent    : float = Field(..., description="CPU usage 0–100%")
-    memory_usage_percent : float = Field(..., description="Memory usage 0–100%")
-    active_servers       : int   = Field(..., description="Number of currently active servers")
+    cpu_usage_percent    : float = Field(..., ge=0, le=100, description="CPU usage 0–100%")
+    memory_usage_percent : float = Field(..., ge=0, le=100, description="Memory usage 0–100%")
+    active_servers       : int   = Field(..., ge=1, description="Active server count (≥1)")
     hour                 : int   = Field(..., ge=0, le=23, description="Current hour (0–23)")
     minute               : int   = Field(..., ge=0, le=59, description="Current minute (0–59)")
-
-    # Optional fields with defaults
-    response_time_ms  : float = Field(100.0, ge=0, description="Average response time in ms")
-    cost_per_server   : float = Field(50.0,  ge=0, description="Cost per server per hour ($)")
-
-    # ── Custom validators for business rules ──────────────────────────────────
-    @field_validator("cpu_usage_percent")
-    @classmethod
-    def validate_cpu(cls, v):
-        if not (0 <= v <= 100):
-            raise ValueError("cpu_usage_percent must be between 0 and 100.")
-        return v
-
-    @field_validator("memory_usage_percent")
-    @classmethod
-    def validate_memory(cls, v):
-        if not (0 <= v <= 100):
-            raise ValueError("memory_usage_percent must be between 0 and 100.")
-        return v
+    response_time_ms     : float = Field(100.0, ge=0, description="Average response time in ms")
+    cost_per_server      : float = Field(50.0,  ge=0, description="Cost per server per hour ($)")
 
     @field_validator("requests_per_minute")
     @classmethod
-    def validate_requests(cls, v):
+    def validate_rpm(cls, v):
         if v < 0:
-            raise ValueError("requests_per_minute must be >= 0.")
+            raise ValueError("requests_per_minute must be ≥ 0.")
         return v
 
-    @field_validator("active_servers")
-    @classmethod
-    def validate_servers(cls, v):
-        if v < 1:
-            raise ValueError("active_servers must be >= 1 (at least one server required).")
-        return v
 
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "requests_per_minute" : 850,
-                "cpu_usage_percent"   : 70,
-                "memory_usage_percent": 65,
-                "active_servers"      : 4,
-                "hour"                : 14,
-                "minute"              : 30,
-                "response_time_ms"    : 120,
-                "cost_per_server"     : 50,
-            }
-        }
 
 
 class PredictionOutput(BaseModel):
-    """Output schema — what the API returns after prediction + decision engine."""
-    predicted_requests  : float  # ML model prediction (req/min in 5 minutes)
-    recommended_servers : int    # How many servers the system recommends
-    action              : str    # "SCALE UP", "SCALE DOWN", or "KEEP SAME"
-    load_per_server     : float  # Predicted load per server
+    """Extended prediction response including XAI fields."""
+    model_config = ConfigDict(from_attributes=True)
 
-    class Config:
-        from_attributes = True
+    predicted_requests   : float
+    recommended_servers  : int
+    action               : str
+    load_per_server      : float
+    confidence_score     : Optional[float]  = None
+    confidence_label     : Optional[str]    = None
+    reasoning_summary    : Optional[str]    = None
+    optimization_recommendations: Optional[List[str]] = None
+    risk_level           : Optional[str]    = None
+    report_id            : Optional[int]    = None
 
 
 class AlertOut(BaseModel):
-    """Public schema for a single alert record."""
-    id         : int
-    severity   : str
-    message    : str
-    source     : str
-    dismissed  : bool
-    created_at : datetime
-
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
+    id: int; severity: str; message: str; source: str; dismissed: bool; created_at: datetime
 
 
 class LogOut(BaseModel):
-    """Public schema for a request log entry."""
-    id          : int
-    method      : str
-    path        : str
-    status_code : int
-    duration_ms : Optional[float]
-    created_at  : datetime
+    model_config = ConfigDict(from_attributes=True)
+    id: int; method: str; path: str; status_code: int
+    duration_ms: Optional[float]; created_at: datetime
 
-    class Config:
-        from_attributes = True
+
+class ReportOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int; report_type: str; title: str; created_at: datetime
+    content: Optional[str] = None
+
+
+class RoleUpdateRequest(BaseModel):
+    role: str
+
+
+class ExplanationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    prediction_id      : int
+    confidence_score   : Optional[float]
+    confidence_label   : Optional[str]
+    reasoning_summary  : Optional[str]
+    feature_contributions: Optional[str]
+    recommendations    : Optional[str]
+    risk_level         : Optional[str]
+    risk_score         : Optional[float]
+    created_at         : datetime
 
 
 # =============================================================================
-# ── PUBLIC ENDPOINTS ──────────────────────────────────────────────────────────
+# ── PUBLIC ENDPOINTS
 # =============================================================================
 
-@app.get("/")
+@app.get("/", tags=["Health"])
 def root():
-    """Welcome message — confirms the API is running."""
-    logger.debug("Root endpoint called.")
     return {
-        "message" : "[CloudMind AI v2] API is running.",
-        "docs"    : "Visit /docs for the interactive API documentation.",
-        "version" : "2.0.0",
+        "message"  : "CloudMind AI v5 — API is running.",
+        "docs"     : "/docs",
+        "version"  : "5.0.0",
+        "features" : [
+            "RBAC", "XAI", "Reporting", "Rate Limiting",
+            "Structured Logging", "Model Registry",
+            "Health Monitoring", "Input Sanitization",
+            "Background Tasks",
+        ],
     }
 
 
-@app.get("/health")
+@app.get("/health", tags=["Health"])
 def health_check(db: Session = Depends(get_db)):
+    """Fast liveness probe — used by Docker HEALTHCHECK and load balancers."""
+    svc = HealthService(db)
+    return svc.liveness()
+
+
+@app.get("/status", tags=["Health"])
+@limiter.limit("20/minute")
+def detailed_status(request: Request, db: Session = Depends(get_db)):
     """
-    Enhanced health check endpoint (v3).
-
-    Returns:
-      - overall status
-      - database connection status + row counts
-      - ML model file status
-      - server timestamp
+    Detailed component health check.
+    Checks: database, ML model, logging system, disk space.
+    No authentication required — safe for internal monitoring.
     """
-    health: dict = {
-        "status"    : "healthy",
-        "service"   : "CloudMind AI Prediction API v3",
-        "timestamp" : datetime.utcnow().isoformat() + "Z",
-        "version"   : "3.0.0",
-        "components": {},
-    }
+    svc = HealthService(db)
+    return svc.get_full_status()
 
-    # ── Database health ────────────────────────────────────────────────────────
-    try:
-        # Use ORM to run a simple query — avoids raw SQL injection risk
-        user_count       = db.query(func.count(User.id)).scalar()
-        prediction_count = db.query(func.count(PredictionRecord.id)).scalar()
-        telemetry_count  = db.query(func.count(TelemetryRecord.id)).scalar()
-        health["components"]["database"] = {
-            "status"          : "connected",
-            "users"           : user_count,
-            "predictions"     : prediction_count,
-            "telemetry_records": telemetry_count,
-        }
-    except Exception as exc:
-        health["status"] = "degraded"
-        health["components"]["database"] = {"status": "error", "detail": str(exc)}
 
-    # ── ML model health ────────────────────────────────────────────────────────
-    try:
-        model_exists = os.path.isfile(MODEL_PATH)
-        model_size   = os.path.getsize(MODEL_PATH) if model_exists else 0
-        model_mtime  = (
-            datetime.utcfromtimestamp(os.path.getmtime(MODEL_PATH)).isoformat() + "Z"
-            if model_exists else None
-        )
-        health["components"]["ml_model"] = {
-            "status"       : "loaded" if model_exists else "missing",
-            "path"         : MODEL_PATH,
-            "size_bytes"   : model_size,
-            "last_modified": model_mtime,
-        }
-        if not model_exists:
-            health["status"] = "degraded"
-    except Exception as exc:
-        health["components"]["ml_model"] = {"status": "error", "detail": str(exc)}
-
-    return health
+@app.get("/metrics", tags=["Health"])
+@limiter.limit("30/minute")
+def get_system_metrics(
+    request      : Request,
+    current_user : User    = Depends(require_role(Role.ADMIN)),
+    db           : Session = Depends(get_db),
+):
+    """
+    Operational metrics dashboard — admin only.
+    Returns prediction counts, user stats, API latency, and cost metrics.
+    """
+    svc = HealthService(db)
+    return svc.get_metrics()
 
 
 # =============================================================================
-# ── AUTH ENDPOINTS ────────────────────────────────────────────────────────────
+# ── AUTH ENDPOINTS
 # =============================================================================
 
-@app.post("/auth/register", response_model=UserOut, status_code=201)
+@app.post("/auth/register", response_model=UserOut, status_code=201, tags=["Auth"])
 @limiter.limit("10/minute")
 def register(request: Request, payload: RegisterRequest, db: Session = Depends(get_db)):
-    """
-    Register a new user account.
-
-    - Username and email must be unique.
-    - Password is hashed with bcrypt before storage (never stored in plaintext).
-    """
+    """Register a new user. Password strength is enforced server-side."""
     try:
         user = create_user(db, payload.username, payload.email, payload.password)
-        logger.info(f"[Auth] New user registered: '{payload.username}' ({payload.email})")
+        slog.info(f"New user registered: '{payload.username}'", event="user_registered")
         return user
     except ValueError as e:
-        logger.warning(f"[Auth] Registration failed for '{payload.username}': {e}")
+        slog.security_event("registration_failed", user=payload.username, detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
 
 
-@app.post("/auth/login", response_model=TokenResponse)
+@app.post("/auth/login", response_model=TokenResponse, tags=["Auth"])
 @limiter.limit("20/minute")
 def login(request: Request, payload: LoginRequest, db: Session = Depends(get_db)):
-    """
-    Authenticate a user and return a JWT access token.
-
-    The token must be included as `Authorization: Bearer <token>` on protected routes.
-    """
+    """Authenticate and return a JWT Bearer token."""
     user = authenticate_user(db, payload.username, payload.password)
     if not user:
-        logger.warning(f"[Auth] Failed login attempt for username='{payload.username}'")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Invalid username or password.",
-            headers={"WWW-Authenticate": "Bearer"},
+        slog.security_event(
+            "login_failed", severity="warning",
+            ip=request.client.host if request.client else None,
+            user=payload.username,
         )
-
+        raise HTTPException(
+            status_code = status.HTTP_401_UNAUTHORIZED,
+            detail      = "Invalid username or password.",
+            headers     = {"WWW-Authenticate": "Bearer"},
+        )
     token = create_access_token(data={"sub": user.username})
-    logger.info(f"[Auth] User '{payload.username}' logged in successfully.")
+    slog.info(f"User logged in: '{payload.username}'", event="login_success")
     return TokenResponse(access_token=token)
 
 
-@app.get("/auth/me", response_model=UserOut)
+@app.get("/auth/me", response_model=UserOut, tags=["Auth"])
 def get_me(current_user: User = Depends(get_current_user)):
     """Return the profile of the currently authenticated user."""
     return current_user
 
 
 # =============================================================================
-# ── PROTECTED ENDPOINTS (require valid JWT) ───────────────────────────────────
+# ── PREDICTION ENDPOINT (with XAI + Auto-Reports)
 # =============================================================================
 
-@app.post("/predict", response_model=PredictionOutput)
+@app.post("/predict", response_model=PredictionOutput, tags=["Prediction"])
 @limiter.limit("100/minute")
 def predict(
-    request      : Request,
-    telemetry    : TelemetryInput,
-    current_user : User    = Depends(get_current_user),
-    db           : Session = Depends(get_db),
+    request            : Request,
+    telemetry          : TelemetryInput,
+    background_tasks   : BackgroundTasks,
+    current_user       : User    = Depends(require_role(Role.USER)),
+    db                 : Session = Depends(get_db),
 ):
     """
-    Main prediction endpoint (PROTECTED — requires JWT token).
+    Run ML workload prediction with XAI explanation (PROTECTED — requires 'user' role).
 
-    Accepts current cloud telemetry and returns:
-    - predicted_requests  : workload forecast ~5 minutes ahead
-    - recommended_servers : how many servers to run
-    - action              : SCALE UP / SCALE DOWN / KEEP SAME
-    - load_per_server     : predicted load distributed across recommended servers
-
-    Every prediction is automatically saved to the database.
+    Returns full prediction result including:
+    - predicted_requests:  workload forecast ~5 min ahead
+    - recommended_servers: decision engine output
+    - action:              SCALE UP / SCALE DOWN / KEEP SAME
+    - confidence_score:    ML model certainty (0.0–1.0)
+    - reasoning_summary:   natural-language explanation
+    - risk_level:          low / medium / high / critical
+    - report_id:           stored optimization report ID
     """
+    t_start = time.perf_counter()
     try:
         input_data = telemetry.model_dump()
 
-        # ── 1. Run ML prediction + decision engine ────────────────────────────
-        result = run_prediction(input_data)
+        # ── 1. ML Prediction ──────────────────────────────────────────────────
+        result     = run_prediction(input_data)
 
-        # ── 2. Save telemetry snapshot to DB ──────────────────────────────────
+        # ── 2. XAI Explanation ────────────────────────────────────────────────
+        explanation = explain_prediction(
+            input_data          = input_data,
+            predicted_requests  = result["predicted_requests"],
+            action              = result["action"],
+            recommended_servers = result["recommended_servers"],
+            load_per_server     = result["load_per_server"],
+        )
+
+        # ── 3. Save telemetry ─────────────────────────────────────────────────
         telemetry_record = TelemetryRecord(
             user_id              = current_user.id,
             requests_per_minute  = telemetry.requests_per_minute,
@@ -447,9 +403,9 @@ def predict(
             cost_per_server      = telemetry.cost_per_server,
         )
         db.add(telemetry_record)
-        db.flush()  # get telemetry_record.id before committing
+        db.flush()
 
-        # ── 3. Save prediction result to DB ───────────────────────────────────
+        # ── 4. Save prediction ────────────────────────────────────────────────
         prediction_record = PredictionRecord(
             telemetry_id        = telemetry_record.id,
             user_id             = current_user.id,
@@ -461,82 +417,111 @@ def predict(
         db.add(prediction_record)
         db.flush()
 
-        # ── 4. Save scaling decision to DB ────────────────────────────────────
+        # ── 5. Save XAI explanation ───────────────────────────────────────────
+        import json as _json
+        explanation_record = PredictionExplanation(
+            prediction_id         = prediction_record.id,
+            confidence_score      = explanation["confidence_score"],
+            confidence_label      = explanation["confidence_label"],
+            reasoning_summary     = explanation["reasoning_summary"],
+            feature_contributions = _json.dumps(explanation["feature_contributions"]),
+            recommendations       = _json.dumps(explanation["optimization_recommendations"]),
+            risk_level            = explanation["risk_assessment"]["overall_risk"],
+            risk_score            = explanation["risk_assessment"]["risk_score"],
+        )
+        db.add(explanation_record)
+        db.flush()
+
+        # ── 6. Save scaling decision ──────────────────────────────────────────
         if result["action"] != "KEEP SAME":
-            scaling_record = ScalingDecision(
+            db.add(ScalingDecision(
                 prediction_id  = prediction_record.id,
                 action         = result["action"],
                 before_servers = telemetry.active_servers,
                 after_servers  = result["recommended_servers"],
-                reason         = f"load_per_server={result['load_per_server']}",
-            )
-            db.add(scaling_record)
+                reason         = explanation["reasoning_summary"][:200],
+            ))
 
         db.commit()
-        logger.info(
-            f"[DB] Saved — telemetry_id={telemetry_record.id}, "
-            f"prediction_id={prediction_record.id}, "
-            f"user={current_user.username}"
+
+        # ── 7. Auto-generate reports (background) ─────────────────────────────
+        rpt_svc = ReportService(db)
+        rpt = rpt_svc.generate_optimization_report(
+            user_id       = current_user.id,
+            prediction_id = prediction_record.id,
+            input_data    = input_data,
+            prediction    = result,
+            explanation   = explanation,
         )
 
-        return result
+        elapsed_ms = round((time.perf_counter() - t_start) * 1000, 2)
+
+        slog.prediction(
+            user          = current_user.username,
+            action        = result["action"],
+            predicted_rpm = result["predicted_requests"],
+            confidence    = explanation["confidence_score"],
+            recommended   = result["recommended_servers"],
+            duration_ms   = elapsed_ms,
+        )
+
+        return {
+            **result,
+            "confidence_score"            : explanation["confidence_score"],
+            "confidence_label"            : explanation["confidence_label"],
+            "reasoning_summary"           : explanation["reasoning_summary"],
+            "optimization_recommendations": explanation["optimization_recommendations"],
+            "risk_level"                  : explanation["risk_assessment"]["overall_risk"],
+            "report_id"                   : rpt.id,
+        }
 
     except HTTPException:
-        raise  # Re-raise auth/validation errors as-is
+        raise
     except Exception as e:
-        logger.error(f"[Predict] Unexpected error: {e}", exc_info=True)
+        logger.error(f"[Predict] Error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Prediction failed: {str(e)}")
 
 
-@app.get("/alerts", response_model=List[AlertOut])
+# =============================================================================
+# ── EXPLANATION ENDPOINTS
+# =============================================================================
+
+@app.get("/explain/{prediction_id}", tags=["XAI"])
 @limiter.limit("60/minute")
-def get_alerts(
-    request      : Request,
-    limit        : int     = 50,
-    current_user : User    = Depends(get_current_user),
-    db           : Session = Depends(get_db),
+def get_explanation(
+    request       : Request,
+    prediction_id : int,
+    current_user  : User    = Depends(get_current_user),
+    db            : Session = Depends(get_db),
 ):
-    """
-    Return the most recent system alerts (PROTECTED).
+    """Retrieve the stored XAI explanation for a specific prediction (PROTECTED)."""
+    pred = db.query(PredictionRecord).filter(
+        PredictionRecord.id      == prediction_id,
+        PredictionRecord.user_id == current_user.id,
+    ).first()
+    if not pred:
+        raise HTTPException(status_code=404, detail="Prediction not found.")
 
-    Query param:
-      limit — max number of alerts to return (default 50)
-    """
-    alerts = (
-        db.query(AlertRecord)
-        .order_by(AlertRecord.created_at.desc())
-        .limit(min(limit, 200))
-        .all()
-    )
-    logger.debug(f"[Alerts] Returned {len(alerts)} alerts for user='{current_user.username}'")
-    return alerts
+    expl = db.query(PredictionExplanation).filter(
+        PredictionExplanation.prediction_id == prediction_id
+    ).first()
+    if not expl:
+        raise HTTPException(status_code=404, detail="Explanation not yet generated for this prediction.")
 
-
-@app.get("/logs", response_model=List[LogOut])
-@limiter.limit("30/minute")
-def get_logs(
-    request      : Request,
-    limit        : int     = 100,
-    current_user : User    = Depends(get_current_user),
-    db           : Session = Depends(get_db),
-):
-    """
-    Return recent API request logs (PROTECTED).
-
-    Query param:
-      limit — max number of log entries to return (default 100)
-    """
-    logs = (
-        db.query(RequestLog)
-        .order_by(RequestLog.created_at.desc())
-        .limit(min(limit, 500))
-        .all()
-    )
-    logger.debug(f"[Logs] Returned {len(logs)} log entries for user='{current_user.username}'")
-    return logs
+    return {
+        "prediction_id"        : prediction_id,
+        "confidence_score"     : expl.confidence_score,
+        "confidence_label"     : expl.confidence_label,
+        "reasoning_summary"    : expl.reasoning_summary,
+        "feature_contributions": json.loads(expl.feature_contributions) if expl.feature_contributions else [],
+        "recommendations"      : json.loads(expl.recommendations) if expl.recommendations else [],
+        "risk_level"           : expl.risk_level,
+        "risk_score"           : expl.risk_score,
+        "created_at"           : expl.created_at.isoformat() if expl.created_at else None,
+    }
 
 
-@app.get("/predictions/history", response_model=List[PredictionOutput])
+@app.get("/predictions/history", tags=["Prediction"])
 @limiter.limit("30/minute")
 def get_prediction_history(
     request      : Request,
@@ -544,10 +529,7 @@ def get_prediction_history(
     current_user : User    = Depends(get_current_user),
     db           : Session = Depends(get_db),
 ):
-    """
-    Return the most recent predictions for the current user (PROTECTED).
-    Used by the frontend to render historical prediction charts.
-    """
+    """Return the most recent predictions with explanation data (PROTECTED)."""
     records = (
         db.query(PredictionRecord)
         .filter(PredictionRecord.user_id == current_user.id)
@@ -557,56 +539,151 @@ def get_prediction_history(
     )
     return [
         {
+            "id"                  : r.id,
             "predicted_requests"  : r.predicted_requests,
             "recommended_servers" : r.recommended_servers,
             "action"              : r.action,
             "load_per_server"     : r.load_per_server,
+            "confidence_score"    : r.explanation.confidence_score if r.explanation else None,
+            "confidence_label"    : r.explanation.confidence_label if r.explanation else None,
+            "risk_level"          : r.explanation.risk_level if r.explanation else None,
+            "created_at"          : r.created_at.isoformat() if r.created_at else None,
         }
         for r in records
     ]
 
 
 # =============================================================================
-# ── ANALYTICS ENDPOINT (v3 NEW) ───────────────────────────────────────────────
+# ── REPORT ENDPOINTS
 # =============================================================================
 
-@app.get("/analytics")
+@app.get("/reports", tags=["Reports"])
+@limiter.limit("30/minute")
+def list_reports(
+    request      : Request,
+    limit        : int   = 20,
+    report_type  : Optional[str] = None,
+    current_user : User    = Depends(get_current_user),
+    db           : Session = Depends(get_db),
+):
+    """List all reports for the current user (PROTECTED)."""
+    query = db.query(Report).filter(Report.user_id == current_user.id)
+    if report_type:
+        query = query.filter(Report.report_type == report_type)
+    reports = query.order_by(Report.created_at.desc()).limit(min(limit, 100)).all()
+    return [
+        {
+            "id"         : r.id,
+            "report_type": r.report_type,
+            "title"      : r.title,
+            "created_at" : r.created_at.isoformat() if r.created_at else None,
+        }
+        for r in reports
+    ]
+
+
+@app.get("/reports/{report_id}", tags=["Reports"])
+@limiter.limit("30/minute")
+def get_report(
+    request      : Request,
+    report_id    : int,
+    current_user : User    = Depends(get_current_user),
+    db           : Session = Depends(get_db),
+):
+    """Retrieve full content of a specific report (PROTECTED)."""
+    report = db.query(Report).filter(
+        Report.id      == report_id,
+        Report.user_id == current_user.id,
+    ).first()
+    if not report:
+        raise HTTPException(status_code=404, detail="Report not found.")
+
+    return {
+        "id"         : report.id,
+        "report_type": report.report_type,
+        "title"      : report.title,
+        "content"    : json.loads(report.content) if report.content else {},
+        "created_at" : report.created_at.isoformat() if report.created_at else None,
+    }
+
+
+@app.post("/reports/historical", tags=["Reports"])
+@limiter.limit("10/minute")
+def generate_historical_report(
+    request      : Request,
+    days         : int   = 7,
+    current_user : User    = Depends(require_role(Role.USER)),
+    db           : Session = Depends(get_db),
+):
+    """Generate and store a historical performance report (PROTECTED)."""
+    rpt_svc = ReportService(db)
+    report  = rpt_svc.generate_historical_report(user_id=current_user.id, days=min(days, 90))
+    return {
+        "report_id"  : report.id,
+        "title"      : report.title,
+        "content"    : json.loads(report.content) if report.content else {},
+        "created_at" : report.created_at.isoformat() if report.created_at else None,
+    }
+
+
+@app.get("/reports/export/json", tags=["Reports"])
+@limiter.limit("10/minute")
+def export_reports_json(
+    request      : Request,
+    limit        : int   = 50,
+    current_user : User    = Depends(get_current_user),
+    db           : Session = Depends(get_db),
+):
+    """Export all reports as JSON download (PROTECTED)."""
+    rpt_svc   = ReportService(db)
+    json_data = rpt_svc.export_reports_json(current_user.id, limit)
+    filename  = f"cloudmind_reports_{current_user.username}_{datetime.utcnow().strftime('%Y%m%d')}.json"
+    return StreamingResponse(
+        iter([json_data]),
+        media_type = "application/json",
+        headers    = {"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+@app.get("/reports/export/csv", tags=["Reports"])
+@limiter.limit("10/minute")
+def export_reports_csv(
+    request      : Request,
+    limit        : int   = 200,
+    current_user : User    = Depends(get_current_user),
+    db           : Session = Depends(get_db),
+):
+    """Export reports as CSV download (PROTECTED)."""
+    rpt_svc  = ReportService(db)
+    csv_data = rpt_svc.export_reports_csv(current_user.id, limit)
+    filename = f"cloudmind_reports_{current_user.username}_{datetime.utcnow().strftime('%Y%m%d')}.csv"
+    return StreamingResponse(
+        iter([csv_data]),
+        media_type = "text/csv",
+        headers    = {"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# =============================================================================
+# ── ANALYTICS ENDPOINT
+# =============================================================================
+
+@app.get("/analytics", tags=["Analytics"])
 @limiter.limit("30/minute")
 def get_analytics(
     request      : Request,
     current_user : User    = Depends(get_current_user),
     db           : Session = Depends(get_db),
 ):
-    """
-    Advanced analytics endpoint (PROTECTED — v3 new).
-
-    Returns aggregated metrics computed entirely via ORM (no raw SQL):
-      - total_predictions     : how many predictions this user has made
-      - action_distribution   : count of SCALE UP / SCALE DOWN / KEEP SAME
-      - avg_predicted_requests: mean forecasted traffic
-      - avg_load_per_server   : mean server load
-      - avg_servers_recommended: average fleet size recommended
-      - estimated_cost_saved  : approx $ saved by SCALE DOWN decisions
-      - peak_predicted        : highest single traffic forecast
-      - min_predicted         : lowest single traffic forecast
-      - scale_up_rate         : % of predictions that triggered SCALE UP
-      - scale_down_rate       : % triggering SCALE DOWN
-      - avg_cpu               : mean CPU usage from telemetry
-      - avg_memory            : mean memory usage from telemetry
-    """
-    # ── Prediction stats ────────────────────────────────────────────────────────
+    """Aggregated analytics for the current user including XAI metrics (PROTECTED)."""
     preds = (
         db.query(PredictionRecord)
         .filter(PredictionRecord.user_id == current_user.id)
         .all()
     )
-
     total = len(preds)
     if total == 0:
-        return {
-            "message": "No predictions yet — run at least one prediction to see analytics.",
-            "total_predictions": 0,
-        }
+        return {"message": "No predictions yet.", "total_predictions": 0}
 
     action_dist = {"SCALE UP": 0, "SCALE DOWN": 0, "KEEP SAME": 0}
     for p in preds:
@@ -618,22 +695,23 @@ def get_analytics(
     peak_req    = round(max(p.predicted_requests   for p in preds), 2)
     min_req     = round(min(p.predicted_requests   for p in preds), 2)
 
-    scale_up_rate   = round(action_dist["SCALE UP"]   / total * 100, 1)
-    scale_down_rate = round(action_dist["SCALE DOWN"] / total * 100, 1)
-
-    # ── Cost savings (rough estimate: each SCALE DOWN saves 1 server × $50/hr) ──
-    estimated_cost_saved = round(action_dist["SCALE DOWN"] * 50, 2)
-
-    # ── Telemetry stats ─────────────────────────────────────────────────────────
-    tele = (
-        db.query(TelemetryRecord)
-        .filter(TelemetryRecord.user_id == current_user.id)
-        .all()
+    # XAI confidence metrics
+    explanations = [p.explanation for p in preds if p.explanation is not None]
+    avg_confidence = (
+        round(sum(e.confidence_score for e in explanations if e.confidence_score) / len(explanations), 3)
+        if explanations else None
     )
-    avg_cpu    = round(sum(t.cpu_usage_percent    for t in tele) / len(tele), 2) if tele else 0
-    avg_memory = round(sum(t.memory_usage_percent for t in tele) / len(tele), 2) if tele else 0
+    risk_dist = {}
+    for e in explanations:
+        if e.risk_level:
+            risk_dist[e.risk_level] = risk_dist.get(e.risk_level, 0) + 1
 
-    # ── Scaling decision history ────────────────────────────────────────────────
+    tele = db.query(TelemetryRecord).filter(TelemetryRecord.user_id == current_user.id).all()
+    avg_cpu  = round(sum(t.cpu_usage_percent    for t in tele) / len(tele), 2) if tele else 0
+    avg_mem  = round(sum(t.memory_usage_percent for t in tele) / len(tele), 2) if tele else 0
+    cost_sv  = tele[-1].cost_per_server if tele else 50
+    est_saved = round(action_dist["SCALE DOWN"] * cost_sv, 2)
+
     scaling_decisions = (
         db.query(ScalingDecision)
         .order_by(ScalingDecision.decided_at.desc())
@@ -642,50 +720,85 @@ def get_analytics(
     )
     recent_scaling = [
         {
-            "action"        : s.action,
-            "before_servers": s.before_servers,
-            "after_servers" : s.after_servers,
-            "reason"        : s.reason,
-            "decided_at"    : s.decided_at.isoformat() if s.decided_at else None,
+            "action": s.action, "before_servers": s.before_servers,
+            "after_servers": s.after_servers, "reason": s.reason,
+            "decided_at": s.decided_at.isoformat() if s.decided_at else None,
         }
         for s in scaling_decisions
     ]
 
     return {
-        "total_predictions"       : total,
-        "action_distribution"     : action_dist,
-        "avg_predicted_requests"  : avg_req,
-        "avg_load_per_server"     : avg_load,
-        "avg_servers_recommended" : avg_servers,
-        "peak_predicted_requests" : peak_req,
-        "min_predicted_requests"  : min_req,
-        "scale_up_rate_pct"       : scale_up_rate,
-        "scale_down_rate_pct"     : scale_down_rate,
-        "estimated_cost_saved_usd": estimated_cost_saved,
-        "avg_cpu_percent"         : avg_cpu,
-        "avg_memory_percent"      : avg_memory,
-        "recent_scaling_decisions": recent_scaling,
+        "total_predictions"          : total,
+        "action_distribution"        : action_dist,
+        "avg_predicted_requests"     : avg_req,
+        "avg_load_per_server"        : avg_load,
+        "avg_servers_recommended"    : avg_servers,
+        "peak_predicted_requests"    : peak_req,
+        "min_predicted_requests"     : min_req,
+        "scale_up_rate_pct"          : round(action_dist["SCALE UP"]   / total * 100, 1),
+        "scale_down_rate_pct"        : round(action_dist["SCALE DOWN"] / total * 100, 1),
+        "estimated_cost_saved_usd"   : est_saved,
+        "avg_cpu_percent"            : avg_cpu,
+        "avg_memory_percent"         : avg_mem,
+        "avg_confidence_score"       : avg_confidence,
+        "risk_distribution"          : risk_dist,
+        "recent_scaling_decisions"   : recent_scaling,
     }
 
 
 # =============================================================================
-# ── EXPORT ENDPOINTS (v3 NEW) ─────────────────────────────────────────────────
+# ── STANDARD PROTECTED ENDPOINTS
 # =============================================================================
 
-@app.get("/export/csv")
+@app.get("/alerts", response_model=List[AlertOut], tags=["Monitoring"])
+@limiter.limit("60/minute")
+def get_alerts(
+    request      : Request,
+    limit        : int   = 50,
+    current_user : User    = Depends(get_current_user),
+    db           : Session = Depends(get_db),
+):
+    """Return recent system alerts (PROTECTED)."""
+    alerts = (
+        db.query(AlertRecord)
+        .order_by(AlertRecord.created_at.desc())
+        .limit(min(limit, 200))
+        .all()
+    )
+    return alerts
+
+
+@app.get("/logs", response_model=List[LogOut], tags=["Monitoring"])
+@limiter.limit("30/minute")
+def get_logs(
+    request      : Request,
+    limit        : int   = 100,
+    current_user : User    = Depends(require_role(Role.ADMIN)),
+    db           : Session = Depends(get_db),
+):
+    """Return API request logs — admin only (PROTECTED)."""
+    logs = (
+        db.query(RequestLog)
+        .order_by(RequestLog.created_at.desc())
+        .limit(min(limit, 500))
+        .all()
+    )
+    return logs
+
+
+# =============================================================================
+# ── EXPORT ENDPOINTS
+# =============================================================================
+
+@app.get("/export/csv", tags=["Export"])
 @limiter.limit("10/minute")
 def export_predictions_csv(
     request      : Request,
     limit        : int   = 200,
-    current_user : User  = Depends(get_current_user),
+    current_user : User    = Depends(get_current_user),
     db           : Session = Depends(get_db),
 ):
-    """
-    Export user's prediction history as a downloadable CSV file (PROTECTED).
-
-    Columns: id, predicted_requests, recommended_servers, action,
-             load_per_server, created_at
-    """
+    """Export prediction history as CSV (PROTECTED)."""
     records = (
         db.query(PredictionRecord)
         .filter(PredictionRecord.user_id == current_user.id)
@@ -693,32 +806,29 @@ def export_predictions_csv(
         .limit(min(limit, 1000))
         .all()
     )
-
-    # Build CSV in memory using csv.writer (safe — no string formatting risk)
     output = io.StringIO()
     writer = csv.writer(output)
-
-    # Header row
     writer.writerow([
         "id", "predicted_requests", "recommended_servers",
-        "action", "load_per_server", "created_at"
+        "action", "load_per_server",
+        "confidence_score", "confidence_label", "risk_level",
+        "created_at",
     ])
-
-    # Data rows — each field is a typed value, not raw user input
     for r in records:
+        expl = r.explanation
         writer.writerow([
             r.id,
             round(r.predicted_requests, 2),
             r.recommended_servers,
             r.action,
             round(r.load_per_server, 2),
+            round(expl.confidence_score, 4) if expl and expl.confidence_score else "",
+            expl.confidence_label if expl else "",
+            expl.risk_level if expl else "",
             r.created_at.isoformat() if r.created_at else "",
         ])
-
     output.seek(0)
     filename = f"cloudmind_predictions_{current_user.username}_{datetime.utcnow().strftime('%Y%m%d')}.csv"
-
-    logger.info(f"[Export] CSV generated for user='{current_user.username}' ({len(records)} rows)")
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type = "text/csv",
@@ -726,22 +836,14 @@ def export_predictions_csv(
     )
 
 
-@app.get("/export/pdf")
+@app.get("/export/pdf", tags=["Export"])
 @limiter.limit("5/minute")
 def export_predictions_pdf(
     request      : Request,
     current_user : User    = Depends(get_current_user),
     db           : Session = Depends(get_db),
 ):
-    """
-    Export a summary PDF report for the current user (PROTECTED).
-
-    Uses only the standard library (no external PDF lib required).
-    Generates a plain-text PDF-compatible report wrapped in a PDF envelope.
-
-    For rich PDFs, install reportlab: pip install reportlab
-    """
-    # ── Fetch data ──────────────────────────────────────────────────────────────
+    """Export prediction summary as PDF (PROTECTED). Falls back to text if reportlab missing."""
     preds = (
         db.query(PredictionRecord)
         .filter(PredictionRecord.user_id == current_user.id)
@@ -749,7 +851,6 @@ def export_predictions_pdf(
         .limit(50)
         .all()
     )
-
     total = len(preds)
     if total == 0:
         raise HTTPException(status_code=404, detail="No predictions to export.")
@@ -760,110 +861,65 @@ def export_predictions_pdf(
 
     avg_req  = round(sum(p.predicted_requests for p in preds) / total, 2)
     avg_load = round(sum(p.load_per_server     for p in preds) / total, 2)
+    now      = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
-
-    # ── Try reportlab (rich PDF) first, fall back to plain-text PDF ────────────
     try:
         from reportlab.lib.pagesizes import letter
         from reportlab.lib import colors
         from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer
         from reportlab.lib.styles import getSampleStyleSheet
 
-        buf = io.BytesIO()
-        doc = SimpleDocTemplate(buf, pagesize=letter)
-        styles = getSampleStyleSheet()
-        elements = []
+        buf  = io.BytesIO()
+        doc  = SimpleDocTemplate(buf, pagesize=letter)
+        st   = getSampleStyleSheet()
+        els  = []
 
-        # Title
-        elements.append(Paragraph("CloudMind AI — Prediction Report", styles["Title"]))
-        elements.append(Paragraph(f"Generated: {now}  |  User: {current_user.username}", styles["Normal"]))
-        elements.append(Spacer(1, 20))
+        els.append(Paragraph("CloudMind AI — Prediction Report", st["Title"]))
+        els.append(Paragraph(f"Generated: {now} | User: {current_user.username}", st["Normal"]))
+        els.append(Spacer(1, 20))
 
-        # Summary table
-        summary_data = [
+        sum_data = [
             ["Metric", "Value"],
-            ["Total Predictions",          str(total)],
-            ["Avg Predicted Traffic",      f"{avg_req} req/min"],
-            ["Avg Load per Server",        f"{avg_load} req/min"],
-            ["SCALE UP count",             str(action_dist["SCALE UP"])],
-            ["SCALE DOWN count",           str(action_dist["SCALE DOWN"])],
-            ["KEEP SAME count",            str(action_dist["KEEP SAME"])],
-            ["Est. Cost Saved",            f"${action_dist['SCALE DOWN'] * 50}"],
+            ["Total Predictions",     str(total)],
+            ["Avg Traffic",           f"{avg_req} req/min"],
+            ["Avg Load/Server",       f"{avg_load} req/min"],
+            ["SCALE UP",              str(action_dist["SCALE UP"])],
+            ["SCALE DOWN",            str(action_dist["SCALE DOWN"])],
+            ["KEEP SAME",             str(action_dist["KEEP SAME"])],
+            ["Est. Cost Saved",       f"${action_dist['SCALE DOWN'] * 50}"],
         ]
-        t = Table(summary_data, colWidths=[260, 200])
+        t = Table(sum_data, colWidths=[260, 200])
         t.setStyle(TableStyle([
             ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#1e3a5f")),
             ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
             ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
             ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.whitesmoke, colors.lightgrey]),
-            ("GRID",       (0,0), (-1,-1), 0.5, colors.grey),
-            ("FONTSIZE",   (0,0), (-1,-1), 10),
+            ("GRID", (0,0), (-1,-1), 0.5, colors.grey),
+            ("FONTSIZE", (0,0), (-1,-1), 10),
         ]))
-        elements.append(t)
-        elements.append(Spacer(1, 20))
-
-        # Prediction table (last 20)
-        pred_data = [["#", "Predicted RPM", "Servers", "Action", "Load/Server", "Time"]]
-        for i, r in enumerate(preds[:20], 1):
-            pred_data.append([
-                str(i),
-                f"{r.predicted_requests:.1f}",
-                str(r.recommended_servers),
-                r.action,
-                f"{r.load_per_server:.1f}",
-                r.created_at.strftime("%m-%d %H:%M") if r.created_at else "—",
-            ])
-        pt = Table(pred_data, colWidths=[30, 100, 60, 90, 80, 100])
-        pt.setStyle(TableStyle([
-            ("BACKGROUND", (0,0), (-1,0), colors.HexColor("#0f4c81")),
-            ("TEXTCOLOR",  (0,0), (-1,0), colors.white),
-            ("FONTNAME",   (0,0), (-1,0), "Helvetica-Bold"),
-            ("ROWBACKGROUNDS", (0,1), (-1,-1), [colors.white, colors.HexColor("#eef3f9")]),
-            ("GRID",       (0,0), (-1,-1), 0.3, colors.grey),
-            ("FONTSIZE",   (0,0), (-1,-1), 8),
-        ]))
-        elements.append(Paragraph("Recent Predictions (last 20)", styles["Heading2"]))
-        elements.append(pt)
-
-        doc.build(elements)
+        els.append(t)
+        doc.build(els)
         buf.seek(0)
-        media_type = "application/pdf"
         content    = buf.read()
+        media_type = "application/pdf"
 
     except ImportError:
-        # reportlab not installed — generate a plain-text "PDF" (text file)
         lines = [
-            "CLOUDMIND AI — PREDICTION REPORT",
-            "=" * 50,
-            f"Generated  : {now}",
-            f"User       : {current_user.username}",
-            "",
-            "SUMMARY",
-            "-" * 30,
-            f"Total Predictions       : {total}",
-            f"Avg Predicted Traffic   : {avg_req} req/min",
-            f"Avg Load per Server     : {avg_load} req/min",
-            f"SCALE UP count          : {action_dist['SCALE UP']}",
-            f"SCALE DOWN count        : {action_dist['SCALE DOWN']}",
-            f"KEEP SAME count         : {action_dist['KEEP SAME']}",
-            f"Est. Cost Saved         : ${action_dist['SCALE DOWN'] * 50}",
-            "",
-            "RECENT PREDICTIONS (last 20)",
-            "-" * 60,
-            f"{'#':<4} {'RPM':>10} {'Servers':>8} {'Action':<12} {'Load/Srv':>10}",
+            "CLOUDMIND AI — PREDICTION REPORT", "=" * 50,
+            f"Generated: {now}  |  User: {current_user.username}", "",
+            "SUMMARY", "-" * 30,
+            f"Total        : {total}",
+            f"Avg Traffic  : {avg_req} req/min",
+            f"Avg Load     : {avg_load} req/min",
+            f"SCALE UP     : {action_dist['SCALE UP']}",
+            f"SCALE DOWN   : {action_dist['SCALE DOWN']}",
+            f"KEEP SAME    : {action_dist['KEEP SAME']}",
+            f"Cost Saved   : ${action_dist['SCALE DOWN'] * 50}",
         ]
-        for i, r in enumerate(preds[:20], 1):
-            lines.append(
-                f"{i:<4} {r.predicted_requests:>10.1f} {r.recommended_servers:>8} "
-                f"{r.action:<12} {r.load_per_server:>10.1f}"
-            )
         content    = "\n".join(lines).encode("utf-8")
-        media_type = "application/pdf"  # still served as PDF download
+        media_type = "application/pdf"
 
     filename = f"cloudmind_report_{current_user.username}_{datetime.utcnow().strftime('%Y%m%d')}.pdf"
-    logger.info(f"[Export] PDF generated for user='{current_user.username}' ({total} predictions)")
-
     return StreamingResponse(
         io.BytesIO(content),
         media_type = media_type,
@@ -872,45 +928,195 @@ def export_predictions_pdf(
 
 
 # =============================================================================
-# ── MODEL RETRAINING ENDPOINT (v3 NEW) ───────────────────────────────────────
+# ── ADMIN ENDPOINTS (RBAC — admin role required)
 # =============================================================================
 
-@app.post("/retrain/trigger")
+@app.get("/admin/users", tags=["Admin"])
+@limiter.limit("20/minute")
+def list_all_users(
+    request      : Request,
+    limit        : int   = 50,
+    current_user : User    = Depends(require_role(Role.ADMIN)),
+    db           : Session = Depends(get_db),
+):
+    """List all registered users — admin only."""
+    users = db.query(User).order_by(User.created_at.desc()).limit(min(limit, 200)).all()
+    return [
+        {
+            "id": u.id, "username": u.username, "email": u.email,
+            "role": u.role, "is_active": u.is_active,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in users
+    ]
+
+
+@app.patch("/admin/users/{username}/role", tags=["Admin"])
+@limiter.limit("10/minute")
+def update_user_role(
+    request      : Request,
+    username     : str,
+    payload      : RoleUpdateRequest,
+    current_user : User    = Depends(require_role(Role.ADMIN)),
+    db           : Session = Depends(get_db),
+):
+    """Change a user's role — admin only."""
+    try:
+        user = set_user_role(db, username, payload.role)
+        slog.security_event(
+            "role_changed", severity="info",
+            user=username, detail=f"Role updated to '{payload.role}' by '{current_user.username}'"
+        )
+        return {"username": user.username, "role": user.role, "updated": True}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =============================================================================
+# ── MODEL RETRAINING
+# =============================================================================
+
+@app.post("/retrain/trigger", tags=["Admin"])
 @limiter.limit("2/minute")
 def trigger_retrain(
     request      : Request,
-    current_user : User = Depends(get_current_user),
+    current_user : User = Depends(require_role(Role.ADMIN)),
 ):
-    """
-    Trigger model retraining manually (PROTECTED).
-
-    Runs the retraining pipeline (retrain.py) synchronously and returns
-    a JSON summary of results.
-
-    In production, this should be run as a background task (FastAPI BackgroundTasks)
-    or Celery worker to avoid blocking the event loop.
-
-    Rate-limited to 2 calls/minute to prevent abuse.
-    """
-    logger.info(f"[Retrain] Manual trigger by user='{current_user.username}'")
-
+    """Manually trigger model retraining and auto-register the new version — admin only."""
+    logger.info(f"[Retrain] Triggered by user='{current_user.username}'")
     try:
-        # Import and run inline (same process — fast for small datasets)
         from retrain import run_retraining
         summary = run_retraining()
         logger.info(f"[Retrain] Completed: {summary['status']}")
+        # Auto-register the new model version
+        try:
+            from predict import MODEL_PATH
+            model_registry.register_model(
+                version_label = f"retrain-{datetime.utcnow().strftime('%Y%m%d')}",
+                source_path   = MODEL_PATH,
+                metrics       = summary.get("metrics", {}),
+                description   = f"Retrain triggered by {current_user.username}",
+            )
+        except Exception as reg_err:
+            logger.warning(f"[Retrain] Model registry update failed (non-critical): {reg_err}")
+        slog.info(f"Model retrain completed", event="model_retrain", triggered_by=current_user.username)
         return summary
-
     except Exception as e:
         logger.error(f"[Retrain] Failed: {e}", exc_info=True)
-        raise HTTPException(
-            status_code = 500,
-            detail      = f"Retraining pipeline failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Retraining failed: {str(e)}")
 
 
 # =============================================================================
-# RUN SERVER (only when running this file directly, not via uvicorn command)
+# ── MODEL REGISTRY ENDPOINTS
+# =============================================================================
+
+@app.get("/admin/model/versions", tags=["Admin"])
+@limiter.limit("20/minute")
+def list_model_versions(
+    request      : Request,
+    current_user : User = Depends(require_role(Role.ADMIN)),
+):
+    """List all registered model versions — admin only."""
+    versions = model_registry.list_versions()
+    current  = model_registry.get_current_version()
+    return {
+        "current_version": current,
+        "total_versions" : len(versions),
+        "versions"       : versions,
+    }
+
+
+class ModelRegisterRequest(BaseModel):
+    version_label: str = Field(..., description="Human-readable version label (e.g., 'v2.0.0')")
+    description  : str = Field("", description="Optional description of changes")
+    n_samples    : int = Field(0, description="Number of training samples used")
+
+
+@app.post("/admin/model/register", tags=["Admin"])
+@limiter.limit("5/minute")
+def register_model_version(
+    request      : Request,
+    payload      : ModelRegisterRequest,
+    current_user : User = Depends(require_role(Role.ADMIN)),
+):
+    """Register current model as a named version — admin only."""
+    try:
+        from predict import MODEL_PATH
+        version_id = model_registry.register_model(
+            version_label = sanitize_string(payload.version_label),
+            source_path   = MODEL_PATH,
+            description   = sanitize_string(payload.description),
+            n_samples     = payload.n_samples,
+        )
+        slog.info(
+            f"Model version registered: {version_id}",
+            event="model_registered", registered_by=current_user.username,
+        )
+        return {
+            "version_id"   : version_id,
+            "version_label": payload.version_label,
+            "registered_by": current_user.username,
+            "status"       : "registered",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class ModelRollbackRequest(BaseModel):
+    version_id: str = Field(..., description="Version ID to restore (e.g., 'v20240101_120000')")
+
+
+@app.post("/admin/model/rollback", tags=["Admin"])
+@limiter.limit("3/minute")
+def rollback_model(
+    request      : Request,
+    payload      : ModelRollbackRequest,
+    current_user : User = Depends(require_role(Role.ADMIN)),
+):
+    """Roll back the active ML model to a previous version — admin only."""
+    try:
+        restored_id = model_registry.rollback(sanitize_string(payload.version_id))
+        slog.security_event(
+            "model_rollback", severity="warning",
+            user=current_user.username,
+            detail=f"Model rolled back to version '{restored_id}'",
+        )
+        return {
+            "restored_version": restored_id,
+            "rolled_back_by"  : current_user.username,
+            "message"         : f"Model rolled back to '{restored_id}'. Restart the service for the change to take effect.",
+        }
+    except (ValueError, FileNotFoundError) as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+# =============================================================================
+# ── ADMIN CLEANUP ENDPOINT
+# =============================================================================
+
+@app.post("/admin/cleanup", tags=["Admin"])
+@limiter.limit("5/minute")
+def run_cleanup(
+    request      : Request,
+    days         : int  = 30,
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+    current_user : User = Depends(require_role(Role.ADMIN)),
+    db           : Session = Depends(get_db),
+):
+    """Trigger background cleanup of request logs older than N days — admin only."""
+    background_tasks.add_task(task_queue.cleanup_old_logs, db, min(days, 365))
+    slog.info(
+        f"Cleanup scheduled for logs older than {days} days",
+        event="cleanup_scheduled", triggered_by=current_user.username,
+    )
+    return {
+        "message"  : f"Background cleanup started — removing request_logs older than {days} days.",
+        "scheduled": True,
+    }
+
+
+# =============================================================================
+# ENTRY POINT
 # =============================================================================
 if __name__ == "__main__":
     import uvicorn
