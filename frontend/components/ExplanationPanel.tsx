@@ -243,11 +243,9 @@ export default function ExplanationPanel({ explanation, isLoading }: Props) {
                 <XAxis type="number" tick={{ fill: "#64748b", fontSize: 10 }} />
                 <YAxis dataKey="name" type="category" tick={{ fill: "#94a3b8", fontSize: 10 }} width={100} />
                 <Tooltip
-                  contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8 }}
-                  labelStyle={{ color: "#f1f5f9" }}
-                  formatter={(value: number, _name: string, props: any) => [
-                    `${value}%`, props.payload.description,
-                  ]}
+                contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8 }}
+                labelStyle={{ color: "#f1f5f9" }}
+                formatter={(value) => `${value}%`}
                 />
                 <Bar dataKey="contribution" radius={[0, 4, 4, 0]}>
                   {chartData.map((entry, i) => (
