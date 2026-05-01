@@ -1,0 +1,7 @@
+{
+  "versions": [],
+  "current_version_id": null,
+  "_schema_version": "1.0",
+  "_description": "CloudMind AI Model Version Registry — auto-managed by model_registry.py",
+  "_note": "Do not edit manually. Use the ModelRegistry API or /admin/model/* endpoints."
+}
