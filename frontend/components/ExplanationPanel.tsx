@@ -245,7 +245,10 @@ export default function ExplanationPanel({ explanation, isLoading }: Props) {
                 <Tooltip
                 contentStyle={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8 }}
                 labelStyle={{ color: "#f1f5f9" }}
-                formatter={(value) => `${value}%`}
+                formatter={(value: any) => {
+                  return value ? value.toString() : "0";
+                }
+              }
                 />
                 <Bar dataKey="contribution" radius={[0, 4, 4, 0]}>
                   {chartData.map((entry, i) => (
