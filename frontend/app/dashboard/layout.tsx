@@ -130,15 +130,21 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{
               width: 36, height: 36, borderRadius: 10,
-              background: 'linear-gradient(135deg, #2563eb, #1d4ed8)',
+              background: 'linear-gradient(135deg, #0078D4, #00BCF2)',
               display: 'flex', alignItems: 'center', justifyContent: 'center',
-              flexShrink: 0, color: '#fff', boxShadow: '0 2px 8px rgba(37,99,235,0.4)',
+              flexShrink: 0, color: '#fff',
+              boxShadow: '0 0 20px rgba(0,120,212,0.6), 0 2px 8px rgba(0,0,0,0.5)',
+              fontSize: '1.1rem',
             }}>
-              <Icons.Cloud />
+              ☁
             </div>
             <div>
-              <div style={{ color: '#e2e8f0', fontWeight: 800, fontSize: 14, letterSpacing: '-0.02em', lineHeight: 1.2 }}>CloudMind AI</div>
-              <div style={{ color: 'rgba(148,163,184,0.7)', fontSize: 10.5, fontWeight: 500, letterSpacing: '0.04em', marginTop: 1 }}>CLOUD INTELLIGENCE</div>
+              <div style={{
+                fontWeight: 800, fontSize: 14, letterSpacing: '-0.02em', lineHeight: 1.2,
+                background: 'linear-gradient(135deg, #5BA7E0 0%, #00BCF2 50%, #F7B731 100%)',
+                WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+              }}>CloudMind AI</div>
+              <div style={{ color: 'rgba(255,255,255,0.2)', fontSize: 10, fontWeight: 600, letterSpacing: '0.08em', marginTop: 1, textTransform: 'uppercase' }}>Cloud Intelligence</div>
             </div>
           </div>
         </div>
@@ -164,7 +170,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         </div>
 
         {/* Section label */}
-        <div style={{ padding: '14px 16px 6px', fontSize: 10, fontWeight: 700, color: 'var(--sidebar-section)', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
+        <div style={{ padding: '14px 16px 6px', fontSize: 10, fontWeight: 700, color: 'rgba(255,255,255,0.2)', letterSpacing: '0.12em', textTransform: 'uppercase' }}>
           Navigation
         </div>
 
@@ -220,7 +226,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
         }}>
           <div style={{
             width: 32, height: 32, borderRadius: '50%', flexShrink: 0,
-            background: 'linear-gradient(135deg, #2563eb, #8b5cf6)',
+            background: 'linear-gradient(135deg, #0078D4, #00BCF2)',
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             fontSize: 12, fontWeight: 800, color: '#fff',
           }}>{initials}</div>
@@ -293,7 +299,7 @@ export default function DashboardLayout({ children }: { children: React.ReactNod
               >
                 <div style={{
                   width: 28, height: 28, borderRadius: '50%',
-                  background: 'linear-gradient(135deg, #2563eb, #8b5cf6)',
+                  background: 'linear-gradient(135deg, #0078D4, #00BCF2)',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   fontSize: 11, fontWeight: 800, color: '#fff',
                 }}>{initials}</div>

@@ -1,161 +1,124 @@
 'use client';
-
 import { useEffect, useState } from 'react';
 import UserMenu from '@/components/UserMenu';
 import { UserOut } from '@/lib/api';
 
-interface Props {
-  backendAlive: boolean | null;
-  user        : UserOut | null;
-  authLoading : boolean;
-  onLogout    : () => void;
-}
+interface Props { backendAlive: boolean | null; user: UserOut | null; authLoading: boolean; onLogout: () => void; }
+
+const NAV = ['Dashboard', 'Analytics', 'Reports', 'Settings'];
 
 export default function TopStatusBar({ backendAlive, user, authLoading, onLogout }: Props) {
   const [clock, setClock] = useState('');
+  const [active, setActive] = useState('Dashboard');
 
   useEffect(() => {
     const tick = () => {
-      const now = new Date();
+      const n = new Date();
       setClock(
-        now.toLocaleTimeString('en-US', {
-          hour: '2-digit',
-          minute: '2-digit',
-          second: '2-digit',
-          hour12: false,
-        }) +
-          '  ·  ' +
-          now.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        n.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) +
+        '  ·  ' +
+        n.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
       );
     };
-    tick();
-    const id = setInterval(tick, 1000);
-    return () => clearInterval(id);
+    tick(); const id = setInterval(tick, 1000); return () => clearInterval(id);
   }, []);
 
-  const statusColor =
-    backendAlive === true ? '#4ade80' : backendAlive === false ? '#f87171' : '#94a3b8';
-  const statusBg =
-    backendAlive === true
-      ? 'rgba(34,197,94,0.1)'
-      : backendAlive === false
-      ? 'rgba(239,68,68,0.1)'
-      : 'rgba(100,116,139,0.08)';
-  const statusBorder =
-    backendAlive === true
-      ? 'rgba(34,197,94,0.4)'
-      : backendAlive === false
-      ? 'rgba(239,68,68,0.4)'
-      : 'rgba(100,116,139,0.2)';
-  const statusLabel =
-    backendAlive === true ? '● ONLINE' : backendAlive === false ? '● OFFLINE' : '● CHECKING…';
+  const on = backendAlive === true, off = backendAlive === false;
 
   return (
-    <header
-      style={{
-        height: '64px',
-        minHeight: '64px',
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        padding: '0 2rem',
-        borderBottom: '1px solid rgba(30,41,59,0.9)',
-        background: 'linear-gradient(90deg, rgba(10,15,30,0.98) 0%, rgba(15,23,42,0.97) 100%)',
-        backdropFilter: 'blur(16px)',
-        position: 'sticky',
-        top: 0,
-        zIndex: 100,
-        flexShrink: 0,
-      }}
-    >
-      {/* Left – Branding */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-        <div
-          style={{
-            width: '32px',
-            height: '32px',
-            borderRadius: '8px',
-            background: 'linear-gradient(135deg, #3b82f6 0%, #06b6d4 100%)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            fontSize: '1rem',
-            boxShadow: '0 0 12px rgba(59,130,246,0.4)',
-          }}
-        >
-          ☁
-        </div>
+    <header style={{
+      height: '64px', minHeight: '64px',
+      display: 'flex', alignItems: 'center',
+      padding: '0 20px',
+      background: 'rgba(4,13,33,0.98)',
+      borderBottom: '1px solid rgba(255,255,255,0.05)',
+      backdropFilter: 'blur(24px)',
+      position: 'sticky', top: 0, zIndex: 100, flexShrink: 0,
+      boxShadow: '0 1px 0 rgba(0,120,212,0.1), 0 4px 24px rgba(0,0,0,0.5)',
+      gap: '0',
+    }}>
+
+      {/* Brand */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '11px', marginRight: '32px' }}>
+        <div style={{
+          width: '36px', height: '36px', borderRadius: '10px', flexShrink: 0,
+          background: 'linear-gradient(135deg, #0078D4 0%, #00BCF2 100%)',
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          fontSize: '1.1rem',
+          boxShadow: '0 0 20px rgba(0,120,212,0.6), 0 2px 8px rgba(0,0,0,0.5)',
+        }}>☁</div>
         <div>
-          <div
-            className="gradient-text"
-            style={{
-              fontFamily: "'Space Grotesk', sans-serif",
-              fontWeight: 700,
-              fontSize: '1rem',
-              lineHeight: 1.1,
-              letterSpacing: '-0.3px',
-            }}
-          >
-            CloudMind AI
-          </div>
-          <div style={{ color: '#475569', fontSize: '0.65rem', letterSpacing: '0.4px' }}>
-            Autonomous Cloud Cost Intelligence
-          </div>
+          <div style={{
+            fontFamily: "'Space Grotesk', sans-serif", fontWeight: 700, fontSize: '0.9rem',
+            background: 'linear-gradient(135deg, #5BA7E0 0%, #00BCF2 50%, #F7B731 100%)',
+            WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent',
+            lineHeight: 1.2,
+          }}>CloudMind AI</div>
+          <div style={{ fontSize: '0.6rem', color: 'rgba(255,255,255,0.2)', letterSpacing: '0.3px' }}>Cloud Cost Intelligence</div>
         </div>
       </div>
 
-      {/* Center – status dot */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '0.4rem' }}>
-        <span className="status-dot" />
-        <span style={{ color: '#475569', fontSize: '0.72rem', fontFamily: "'Space Mono', monospace" }}>
-          Real-time Workload Forecasting
-        </span>
-      </div>
+      {/* Divider */}
+      <div style={{ width: '1px', height: '28px', background: 'rgba(255,255,255,0.06)', marginRight: '24px', flexShrink: 0 }} />
 
-      {/* Right – API status + clock + env badge */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-        <div
-          style={{
-            fontSize: '0.7rem',
-            fontFamily: "'Space Mono', monospace",
-            padding: '0.3rem 0.85rem',
-            borderRadius: '999px',
-            background: statusBg,
-            border: `1px solid ${statusBorder}`,
-            color: statusColor,
-            letterSpacing: '0.4px',
+      {/* Nav tabs */}
+      <nav style={{ display: 'flex', alignItems: 'center', gap: '2px', marginRight: 'auto' }}>
+        {NAV.map(tab => (
+          <button key={tab} onClick={() => setActive(tab)} style={{
+            background: active === tab ? 'rgba(0,120,212,0.15)' : 'transparent',
+            border: active === tab ? '1px solid rgba(0,120,212,0.25)' : '1px solid transparent',
+            borderRadius: '8px', padding: '6px 14px',
+            fontSize: '12px', fontWeight: active === tab ? 600 : 400,
+            color: active === tab ? '#5BA7E0' : 'rgba(255,255,255,0.35)',
+            cursor: 'pointer', transition: 'all 0.18s',
+            fontFamily: "'Inter', sans-serif",
           }}
-        >
-          API {statusLabel}
+            onMouseEnter={e => { if (active !== tab)(e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.65)'; }}
+            onMouseLeave={e => { if (active !== tab)(e.currentTarget as HTMLButtonElement).style.color = 'rgba(255,255,255,0.35)'; }}
+          >{tab}</button>
+        ))}
+      </nav>
+
+      {/* Right cluster */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+        {/* Live indicator */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: '#00B050', boxShadow: '0 0 8px #00B050', animation: 'livePulse 2s ease infinite' }} />
+          <span style={{ fontSize: '11px', color: 'rgba(255,255,255,0.25)', fontFamily: "'JetBrains Mono', monospace" }}>Forecasting Active</span>
         </div>
 
-        <div
-          style={{
-            fontSize: '0.7rem',
-            fontFamily: "'Space Mono', monospace",
-            color: '#64748b',
-          }}
-        >
-          {clock}
+        <div style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.06)' }} />
+
+        {/* Clock */}
+        <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: '11px', color: 'rgba(255,255,255,0.2)', letterSpacing: '0.3px' }}>{clock}</span>
+
+        <div style={{ width: '1px', height: '20px', background: 'rgba(255,255,255,0.06)' }} />
+
+        {/* Savings badge */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '6px',
+          padding: '5px 12px', borderRadius: '999px',
+          background: 'rgba(247,183,49,0.08)',
+          border: '1px solid rgba(247,183,49,0.2)',
+          fontSize: '11px', fontWeight: 700, color: '#F7B731',
+        }}>💰 Saved $12.8K this month</div>
+
+        {/* API status */}
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: '6px',
+          padding: '5px 12px', borderRadius: '999px',
+          background: on ? 'rgba(0,176,80,0.08)' : off ? 'rgba(229,62,62,0.08)' : 'rgba(255,255,255,0.04)',
+          border: `1px solid ${on ? 'rgba(0,176,80,0.25)' : off ? 'rgba(229,62,62,0.25)' : 'rgba(255,255,255,0.08)'}`,
+          fontSize: '11px', fontWeight: 600,
+          color: on ? '#00B050' : off ? '#FF4D4F' : 'rgba(255,255,255,0.3)',
+        }}>
+          <div style={{ width: '6px', height: '6px', borderRadius: '50%', background: on ? '#00B050' : off ? '#FF4D4F' : 'rgba(255,255,255,0.3)', animation: on ? 'livePulse 2s ease infinite' : 'none' }} />
+          API {on ? 'Online' : off ? 'Offline' : 'Checking…'}
         </div>
 
-        <div
-          style={{
-            fontSize: '0.65rem',
-            fontFamily: "'Space Mono', monospace",
-            padding: '0.25rem 0.65rem',
-            borderRadius: '6px',
-            background: 'rgba(139,92,246,0.12)',
-            border: '1px solid rgba(139,92,246,0.3)',
-            color: '#a78bfa',
-            letterSpacing: '1px',
-            fontWeight: 700,
-          }}
-        >
-          LOCAL
-        </div>
+        {/* ENV badge */}
+        <div style={{ padding: '4px 10px', borderRadius: '6px', background: 'rgba(0,120,212,0.1)', border: '1px solid rgba(0,120,212,0.2)', fontSize: '10px', fontWeight: 700, color: 'rgba(0,188,242,0.8)', letterSpacing: '1px', fontFamily: "'JetBrains Mono', monospace" }}>DEV</div>
 
-        {/* User menu with logout */}
         <UserMenu user={user} loading={authLoading} onLogout={onLogout} />
       </div>
     </header>

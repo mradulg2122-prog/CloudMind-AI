@@ -114,7 +114,7 @@ apiClient.interceptors.request.use((config) => {
   return config;
 });
 
-// Response interceptor — auto-logout on 401
+// Response interceptor — auto-logout on 401, always throw plain string errors
 apiClient.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -122,7 +122,26 @@ apiClient.interceptors.response.use(
       // Token expired or invalid — clear it so the login page shows
       clearToken();
     }
-    return Promise.reject(error);
+
+    // Sanitize Pydantic / FastAPI error detail into a plain string
+    const detail = error.response?.data?.detail;
+    let message: string;
+    if (Array.isArray(detail)) {
+      // 422 Pydantic validation error — array of {type, loc, msg, input, ctx}
+      message = detail
+        .map((d: { msg?: string; loc?: string[] }) => {
+          const field = d.loc ? d.loc.filter((l) => l !== 'body').join('.') : '';
+          return field ? `${field}: ${d.msg}` : (d.msg ?? JSON.stringify(d));
+        })
+        .join('; ');
+    } else if (typeof detail === 'string') {
+      message = detail;
+    } else {
+      message = error.message ?? 'An unexpected error occurred.';
+    }
+
+    // Re-throw as a plain Error so pages just get err.message as a string
+    return Promise.reject(new Error(message));
   }
 );
 

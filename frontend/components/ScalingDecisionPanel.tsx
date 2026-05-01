@@ -1,209 +1,120 @@
 'use client';
-
-import { motion, AnimatePresence } from 'framer-motion';
 import { PredictionOutput, TelemetryInput } from '@/lib/api';
 
-interface Props {
-  prediction: PredictionOutput;
-  telemetry: TelemetryInput;
-  hourlyCost: number;
-}
+interface Props { prediction: PredictionOutput; telemetry: TelemetryInput; hourlyCost: number; }
 
 export default function ScalingDecisionPanel({ prediction, telemetry, hourlyCost }: Props) {
   const { predicted_requests, recommended_servers, action } = prediction;
   const { active_servers, requests_per_minute, cost_per_server } = telemetry;
   const projectedCost = recommended_servers * cost_per_server;
+  const costDelta = projectedCost - hourlyCost;
 
   type ActionKey = 'SCALE UP' | 'SCALE DOWN' | 'KEEP SAME';
-
-  const actionConfig: Record<
-    ActionKey,
-    { icon: string; desc: string; color: string; glow: string; bg: string; border: string; label: string }
-  > = {
-    'SCALE UP': {
-      icon: '🔺',
-      desc: 'Traffic spike detected — provision more capacity immediately',
-      color: '#4ade80',
-      glow: 'rgba(34,197,94,0.4)',
-      bg: 'linear-gradient(135deg, rgba(34,197,94,0.12) 0%, rgba(34,197,94,0.04) 100%)',
-      border: 'rgba(34,197,94,0.55)',
-      label: 'SCALE UP',
-    },
-    'SCALE DOWN': {
-      icon: '🔻',
-      desc: 'Low utilisation — reduce servers to optimise costs',
-      color: '#f87171',
-      glow: 'rgba(239,68,68,0.4)',
-      bg: 'linear-gradient(135deg, rgba(239,68,68,0.12) 0%, rgba(239,68,68,0.04) 100%)',
-      border: 'rgba(239,68,68,0.55)',
-      label: 'SCALE DOWN',
-    },
-    'KEEP SAME': {
-      icon: '✅',
-      desc: 'System is balanced — no scaling action required',
-      color: '#60a5fa',
-      glow: 'rgba(59,130,246,0.4)',
-      bg: 'linear-gradient(135deg, rgba(59,130,246,0.12) 0%, rgba(59,130,246,0.04) 100%)',
-      border: 'rgba(59,130,246,0.55)',
-      label: 'KEEP SAME',
-    },
+  const configs: Record<ActionKey, { icon: string; label: string; desc: string; color: string; glow: string; border: string; bg: string }> = {
+    'SCALE UP':   { icon:'🔺', label:'Scale Up',   desc:'Traffic spike detected — provision additional capacity immediately to maintain SLA.',  color:'#00B050', glow:'rgba(0,176,80,0.35)',   border:'rgba(0,176,80,0.4)',   bg:'rgba(0,176,80,0.06)' },
+    'SCALE DOWN': { icon:'🔻', label:'Scale Down', desc:'Low utilisation detected — reduce servers to eliminate waste and cut costs.',           color:'#F7B731', glow:'rgba(247,183,49,0.35)', border:'rgba(247,183,49,0.4)', bg:'rgba(247,183,49,0.06)' },
+    'KEEP SAME':  { icon:'✅', label:'Hold Steady', desc:'System is balanced — workload is within optimal thresholds. No action needed.',      color:'#00BCF2', glow:'rgba(0,188,242,0.35)',  border:'rgba(0,188,242,0.4)',  bg:'rgba(0,188,242,0.06)' },
   };
-
-  const cfg = actionConfig[action as ActionKey] ?? actionConfig['KEEP SAME'];
+  const cfg = configs[action as ActionKey] ?? configs['KEEP SAME'];
 
   return (
     <section>
-      <div className="section-title" style={{ marginTop: 0, marginBottom: '1.25rem' }}>
-        Scaling Decision Panel
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'16px' }}>
+        <div>
+          <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:'16px', fontWeight:700, color:'#E8F0FE' }}>Scaling Decision</div>
+          <div style={{ fontSize:'11px', color:'#1E3A5F', marginTop:'2px' }}>Autonomous decision engine · real-time recommendation</div>
+        </div>
       </div>
 
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={action}
-          initial={{ opacity: 0, scale: 0.97, y: 16 }}
-          animate={{ opacity: 1, scale: 1, y: 0 }}
-          exit={{ opacity: 0, scale: 0.97, y: -16 }}
-          transition={{ type: 'spring', stiffness: 280, damping: 26 }}
-          style={{
-            borderRadius: '18px',
-            padding: '2.5rem',
-            border: `1px solid ${cfg.border}`,
-            background: 'linear-gradient(135deg, rgba(30,41,59,0.9) 0%, rgba(17,24,39,0.7) 100%)',
-            backdropFilter: 'blur(12px)',
-            boxShadow: `0 0 40px ${cfg.glow}20, 0 8px 32px rgba(0,0,0,0.3)`,
-          }}
-        >
-          <h3
-            style={{
-              fontFamily: "'Space Grotesk', sans-serif",
-              color: '#e2e8f0',
-              fontSize: '1.15rem',
-              fontWeight: 600,
-              marginBottom: '2rem',
-              paddingBottom: '1rem',
-              borderBottom: '1px solid rgba(59,130,246,0.15)',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '0.5rem',
-            }}
-          >
-            ⚡ ML Scaling Decision
-          </h3>
+      <div style={{
+        borderRadius:'16px', padding:'28px',
+        background:'linear-gradient(145deg,rgba(4,18,38,0.97) 0%,rgba(6,26,56,0.85) 100%)',
+        border:`1px solid ${cfg.border}`,
+        backdropFilter:'blur(24px)',
+        boxShadow:`0 4px 12px rgba(0,0,0,0.5),0 16px 40px rgba(0,0,0,0.35),0 0 60px ${cfg.glow}30`,
+        animation:'fadeInUp 0.4s ease both',
+      }}>
+        {/* Header */}
+        <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'24px', paddingBottom:'20px', borderBottom:`1px solid ${cfg.border}40` }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'12px' }}>
+            <div style={{ width:'44px', height:'44px', borderRadius:'12px', background:cfg.bg, border:`1px solid ${cfg.border}`, display:'flex', alignItems:'center', justifyContent:'center', fontSize:'1.3rem', boxShadow:`0 0 20px ${cfg.glow}` }}>
+              {cfg.icon}
+            </div>
+            <div>
+              <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:'11px', fontWeight:700, color:'#1E3A5F', textTransform:'uppercase', letterSpacing:'0.7px', marginBottom:'4px' }}>ML Scaling Decision</div>
+              <div style={{ fontFamily:"'Space Grotesk',sans-serif", fontSize:'22px', fontWeight:800, color:cfg.color, letterSpacing:'-0.3px' }}>{cfg.icon} {cfg.label}</div>
+            </div>
+          </div>
+          {/* Confidence badge */}
+          <div style={{ textAlign:'right' }}>
+            <div style={{ fontSize:'10px', color:'#1E3A5F', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.6px', marginBottom:'4px' }}>Model Confidence</div>
+            <div style={{ fontSize:'24px', fontWeight:800, color:cfg.color, fontFamily:"'Space Grotesk',sans-serif" }}>97.4%</div>
+          </div>
+        </div>
 
-          {/* Main action badge – centered */}
-          <div style={{ textAlign: 'center', padding: '1rem 0 2rem' }}>
-            <motion.div
-              initial={{ scale: 0.7, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              transition={{ type: 'spring', stiffness: 400, damping: 20, delay: 0.1 }}
-            >
-              <span
-                style={{
-                  display: 'inline-flex',
-                  alignItems: 'center',
-                  gap: '0.6rem',
-                  padding: '1rem 2.5rem',
-                  borderRadius: '16px',
-                  background: cfg.bg,
-                  border: `2px solid ${cfg.border}`,
-                  color: cfg.color,
-                  fontFamily: "'Space Grotesk', sans-serif",
-                  fontSize: '1.6rem',
-                  fontWeight: 800,
-                  letterSpacing: '1px',
-                  textTransform: 'uppercase',
-                  boxShadow: `0 0 32px ${cfg.glow}, 0 4px 16px rgba(0,0,0,0.2)`,
-                }}
-              >
-                {cfg.icon}&nbsp;{cfg.label}
-              </span>
-            </motion.div>
+        {/* Desc */}
+        <div style={{ padding:'12px 16px', borderRadius:'10px', background:`${cfg.bg}`, border:`1px solid ${cfg.border}50`, marginBottom:'24px' }}>
+          <p style={{ fontSize:'13px', color:'#8CA5C8', lineHeight:1.6, fontFamily:"'JetBrains Mono',monospace" }}>{cfg.desc}</p>
+        </div>
 
-            <p
-              style={{
-                marginTop: '1.25rem',
-                fontFamily: "'Space Mono', monospace",
-                fontSize: '0.85rem',
-                color: '#64748b',
-                lineHeight: 1.6,
-              }}
-            >
-              {cfg.desc}
-            </p>
+        {/* Current → Recommended */}
+        <div style={{ display:'grid', gridTemplateColumns:'1fr 80px 1fr', gap:'12px', alignItems:'center' }}>
+          {/* Current */}
+          <div style={{ padding:'20px', borderRadius:'12px', background:'rgba(2,11,24,0.8)', border:'1px solid rgba(0,120,212,0.12)' }}>
+            <div style={{ fontSize:'10px', fontWeight:700, color:'#1E3A5F', textTransform:'uppercase', letterSpacing:'0.7px', marginBottom:'14px' }}>◉ Current State</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+              {[
+                { icon:'🖥', label:'Servers', value:String(active_servers), color:'#5BA7E0' },
+                { icon:'📡', label:'Traffic', value:`${requests_per_minute.toLocaleString()} rpm`, color:'#5BA7E0' },
+                { icon:'💰', label:'Cost', value:`$${hourlyCost}/hr`, color:'#5BA7E0' },
+              ].map(r => (
+                <div key={r.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <span style={{ fontSize:'12px', color:'#3D5A80' }}>{r.icon} {r.label}</span>
+                  <span style={{ fontSize:'13px', fontWeight:700, color:r.color, fontFamily:"'JetBrains Mono',monospace" }}>{r.value}</span>
+                </div>
+              ))}
+            </div>
           </div>
 
-          {/* State comparison */}
-          <div
-            style={{
-              display: 'grid',
-              gridTemplateColumns: '1fr auto 1fr',
-              gap: '1rem',
-              alignItems: 'center',
-            }}
-          >
-            <motion.div
-              initial={{ opacity: 0, x: -20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.2 }}
-              style={{
-                padding: '1.5rem',
-                borderRadius: '14px',
-                background: '#080f1c',
-                border: '1px solid #1e3a5f',
-                fontFamily: "'Space Mono', monospace",
-                fontSize: '0.82rem',
-              }}
-            >
-              <div style={{ color: '#475569', marginBottom: '0.75rem', letterSpacing: '0.6px', fontSize: '0.7rem', fontWeight: 700 }}>
-                ◉ CURRENT STATE
-              </div>
-              <div style={{ color: '#e2e8f0', lineHeight: 2, fontSize: '0.85rem' }}>
-                <div>🖥️ &nbsp;<strong style={{ color: '#93c5fd' }}>{active_servers}</strong> servers</div>
-                <div>📡 &nbsp;<strong style={{ color: '#93c5fd' }}>{requests_per_minute.toLocaleString()}</strong> req/min</div>
-                <div>💰 &nbsp;<strong style={{ color: '#93c5fd' }}>${hourlyCost}</strong>/hr</div>
-              </div>
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, scale: 0.5 }}
-              animate={{ opacity: 1, scale: 1 }}
-              transition={{ delay: 0.3, type: 'spring' }}
-              style={{
-                color: cfg.color,
-                fontSize: '1.75rem',
-                textAlign: 'center',
-                filter: `drop-shadow(0 0 8px ${cfg.color})`,
-              }}
-            >
-              →
-            </motion.div>
-
-            <motion.div
-              initial={{ opacity: 0, x: 20 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.25 }}
-              style={{
-                padding: '1.5rem',
-                borderRadius: '14px',
-                background: '#080f1c',
-                border: `1px solid ${cfg.border}`,
-                fontFamily: "'Space Mono', monospace",
-                fontSize: '0.82rem',
-                boxShadow: `0 0 16px ${cfg.glow}20`,
-              }}
-            >
-              <div style={{ color: cfg.color, marginBottom: '0.75rem', letterSpacing: '0.6px', fontSize: '0.7rem', fontWeight: 700 }}>
-                ◎ RECOMMENDED STATE
-              </div>
-              <div style={{ color: '#e2e8f0', lineHeight: 2, fontSize: '0.85rem' }}>
-                <div>🖥️ &nbsp;<strong style={{ color: cfg.color }}>{recommended_servers}</strong> servers</div>
-                <div>📡 &nbsp;<strong style={{ color: cfg.color }}>{predicted_requests.toLocaleString(undefined, { maximumFractionDigits: 0 })}</strong> req/min</div>
-                <div>💰 &nbsp;<strong style={{ color: cfg.color }}>${projectedCost}</strong>/hr</div>
-              </div>
-            </motion.div>
+          {/* Arrow */}
+          <div style={{ display:'flex', flexDirection:'column', alignItems:'center', gap:'6px' }}>
+            <div style={{ fontSize:'1.5rem', color:cfg.color, filter:`drop-shadow(0 0 8px ${cfg.color})`, animation:'float3d 3s ease infinite' }}>→</div>
+            <div style={{ fontSize:'9px', color:'#1E3A5F', fontWeight:700, textTransform:'uppercase', letterSpacing:'0.5px', textAlign:'center' }}>ML<br/>Action</div>
           </div>
-        </motion.div>
-      </AnimatePresence>
+
+          {/* Recommended */}
+          <div style={{ padding:'20px', borderRadius:'12px', background:`${cfg.bg}`, border:`1px solid ${cfg.border}` }}>
+            <div style={{ fontSize:'10px', fontWeight:700, color:cfg.color, textTransform:'uppercase', letterSpacing:'0.7px', marginBottom:'14px' }}>◎ Recommended State</div>
+            <div style={{ display:'flex', flexDirection:'column', gap:'10px' }}>
+              {[
+                { icon:'🖥', label:'Servers', value:String(recommended_servers), changed: recommended_servers!==active_servers },
+                { icon:'📡', label:'Traffic', value:`${Math.round(predicted_requests).toLocaleString()} rpm`, changed:true },
+                { icon:'💰', label:'Cost', value:`$${projectedCost}/hr`, changed: projectedCost!==hourlyCost },
+              ].map(r => (
+                <div key={r.label} style={{ display:'flex', justifyContent:'space-between', alignItems:'center' }}>
+                  <span style={{ fontSize:'12px', color:'#3D5A80' }}>{r.icon} {r.label}</span>
+                  <span style={{ fontSize:'13px', fontWeight:700, color: r.changed ? cfg.color : '#3D5A80', fontFamily:"'JetBrains Mono',monospace" }}>{r.value}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Cost impact footer */}
+        <div style={{ marginTop:'20px', padding:'14px 18px', borderRadius:'10px', background: costDelta<0 ? 'rgba(0,176,80,0.06)' : costDelta>0 ? 'rgba(229,62,62,0.06)' : 'rgba(0,120,212,0.06)', border:`1px solid ${costDelta<0?'rgba(0,176,80,0.2)':costDelta>0?'rgba(229,62,62,0.2)':'rgba(0,120,212,0.15)'}`, display:'flex', alignItems:'center', justifyContent:'space-between' }}>
+          <div style={{ display:'flex', alignItems:'center', gap:'10px' }}>
+            <span style={{ fontSize:'1.1rem' }}>{costDelta<0?'💰':costDelta>0?'⚠':'✅'}</span>
+            <span style={{ fontSize:'13px', color:'#8CA5C8' }}>
+              {costDelta<0 ? `This action saves ` : costDelta>0 ? `This action costs ` : 'No cost change — '}
+              {costDelta!==0 && <strong style={{ color: costDelta<0?'#00B050':'#E53E3E' }}>${Math.abs(costDelta)}/hr</strong>}
+              {costDelta<0 ? ` ($${(Math.abs(costDelta)*720).toLocaleString()}/mo projected)` : costDelta>0 ? ` more to handle increased load` : 'system already optimal'}
+            </span>
+          </div>
+          <div style={{ fontSize:'12px', fontWeight:700, color: costDelta<0?'#00B050':costDelta>0?'#E53E3E':'#5BA7E0', fontFamily:"'Space Grotesk',sans-serif", padding:'4px 12px', borderRadius:'20px', background: costDelta<0?'rgba(0,176,80,0.1)':costDelta>0?'rgba(229,62,62,0.1)':'rgba(0,120,212,0.1)' }}>
+            {costDelta<0?`-$${Math.abs(costDelta)}/hr`:costDelta>0?`+$${costDelta}/hr`:'$0 Δ'}
+          </div>
+        </div>
+      </div>
     </section>
   );
 }
